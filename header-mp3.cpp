@@ -162,8 +162,7 @@ HeaderStruct parseHeader (unsigned char *t)
 }
 
 void displayInfo(char name[], HeaderStruct &head, float size, int min, int sec)
-{
-  	  
+{  	  
   cout << "\nFile         : " << name           << endl;
   cout << "Version      : " << head.mpegVersion  << endl;
   cout << "Layer        : " << head.layer        << endl;
@@ -179,33 +178,107 @@ void displayInfo(char name[], HeaderStruct &head, float size, int min, int sec)
   cout << "Emphasis     : " << head.emphasis      << endl; 
   cout << "File Size    : " << size << " MB" << endl;
   cout << "Duration     : " << min << " : " << sec << endl;
+}
 
+void error_exit (const char msg[])
+{
+  cout << msg << endl;
+  exit (1);
 }
 
 int main (int argc, char *argv[])
 {
-  FILE *mp3File = NULL;
   unsigned char temp[2] = {0,0};
-  int count = 0;
-  int c=0, p=0, n=0;
-  int spf, size;
-  int startPos, endPos;
-  long frameCount = 0;
-  int min, sec;
+  HeaderStruct  head; 
+  FILE *mp3File   = NULL;
+  FILE *newFile;
   float duration;
   float avgBitrate = 0;
-  HeaderStruct head;
-  
-  if (argc < 2 )
+  char *arg;
+  char  tag       [4096*2];
+  char  sourceFile[20];
+  char  outputFile[20];
+  int   spf;
+  int   size;
+  int   startPos;
+  int   endPos;
+  int   count   = 0;
+  int   c       = 0;
+  int   p       = 0;
+  int   n       = 0; 
+  long  dur     = 0;
+  long  curDur  = 0; 
+  long  min     = 0;
+  long  sec     = 0;
+  long  outMin  = 0;
+  long  outSec  = 0;
+  long  frameCount = 0;
+
+  if (argc <= 1)
     {
-      cout << "Usage <pgm> filename" << endl;
-      exit (1);
+      error_exit ("Invalid input!");
     }
   
-  if(!(mp3File = fopen (argv[1], "rb")))
+  // Parse input
+  int i=1;
+  while ( i<argc)
     {
-      cout << "Can not open file!!" << endl;
-      exit (1);
+      arg = argv[i++];
+      
+      if (strcmp(arg, "-s") == 0)
+	{
+	  if (i<argc)
+	    {
+	      strcpy (sourceFile, argv[i++]);
+	    }
+	  else
+	    {
+	      error_exit ("Source file name is not provided");
+	    }
+	}
+      else if (strcmp(arg, "-o") == 0)
+	{
+	  if (i<argc)
+	    {
+	      strcpy (outputFile, argv[i++]);
+	    }
+	  else
+	    {
+	      error_exit ("Ouput file name is not provided");
+	    }
+	}      
+      else if (strcmp(arg, "-t") == 0)
+	{
+	  if (i<argc)
+	    {	    
+	      char *delimiterPos = strstr(argv[i],":");
+	      char minStr[10];
+
+	      outSec = atoi (delimiterPos+1);
+	      while (outSec>=60)
+		{
+		  outMin++;
+		  outSec -= 60;
+		}
+
+	      strncpy (minStr, argv[i], delimiterPos-argv[i]);
+	      minStr[strlen(minStr)] = '\0';
+	      outMin += atol(minStr);
+	      i++;
+	      
+	    }
+	  else
+	    {
+	      error_exit ("Time of end is not provided not provided");
+	    }
+	}
+    }
+  
+  printf("SOURCE\t:\t%s \nOUTPUT\t:\t%s \nTIME\t:\t%ld min %ld sec\n\n", sourceFile, outputFile, outMin, outSec);
+  
+  if(!(mp3File = fopen (sourceFile, "rb")))
+    {
+      error_exit("Can not open file!!");
     }
 
   n = fgetc (mp3File);
@@ -251,72 +324,60 @@ int main (int argc, char *argv[])
   min = (int) duration / 60;
   sec = (duration-min)*60;
 
-  displayInfo (argv[1], head, size, min, sec);  
+  displayInfo (sourceFile, head, size, min, sec);  
   fclose(mp3File);
 
-  if (argc == 5)
-    {    
- 
-      FILE *newFile;
-      char tag[4096*2];
-      long dur;
-      long curDur = 0;
-      int avgBitrate = 0;
-      int frameCount = 0;
+  avgBitrate = 0;
+  frameCount = 0;
 
 
-      mp3File = fopen (argv[1], "rb");
-      if(!(newFile = fopen (argv[2], "wb")))
-	{
-	  cout << "Invalid file name" << endl;
-	  exit(0);
-	} 
+  mp3File = fopen (sourceFile, "rb");
+  if(!(newFile = fopen (outputFile, "wb")))
+    {
+      error_exit("Invalid file name");
+    } 
 
-      min = atoi (argv[3]); 
-      sec = atoi (argv[4]);
 
-      fread (&tag, count-2, sizeof(char), mp3File);
-      fwrite(&tag, count-2, sizeof(char), newFile);
-      startPos = ftell(newFile);
+  fread (&tag, count-2, sizeof(char), mp3File);
+  fwrite(&tag, count-2, sizeof(char), newFile);
+  startPos = ftell(newFile);
 				      
-      dur = (sec + min*60);
-      while (curDur <= dur)
-	{
-	  fread (&temp, 4, sizeof(char), mp3File);
+  dur = (outSec + outMin*60);
+  while (curDur < dur)
+    {
+      fread (&temp, 4, sizeof(char), mp3File);
 
-	  head = parseHeader(temp);
+      head = parseHeader(temp);
       
-	  avgBitrate = (avgBitrate*frameCount+head.bitRate)/(frameCount+1);
-	  frameCount++;
+      avgBitrate = (avgBitrate*frameCount+head.bitRate)/(frameCount+1);
+      frameCount++;
 	  
-	  spf = SamplesPerFrame[head.layer-1][head.mpegVersion-1];
-	  size = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
-	    + head.padding;
-	  size += (head.crcProtection > 0) ? 0 : 2;
+      spf = SamplesPerFrame[head.layer-1][head.mpegVersion-1];
+      size = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
+	+ head.padding;
+      size += (head.crcProtection > 0) ? 0 : 2;
 
-	  fseek (mp3File, -4L, SEEK_CUR);
-	  fread(&tag, size, sizeof(char), mp3File);
-	  fwrite (&tag, size, sizeof(char), newFile);
+      fseek (mp3File, -4L, SEEK_CUR);
+      fread  (&tag, size, sizeof(char), mp3File);
+      fwrite (&tag, size, sizeof(char), newFile);
 
+      curDur = ((ftell(mp3File)-startPos) / avgBitrate * 8.0 / 1000) ;
 
-	  curDur = ((ftell(mp3File)-startPos) / avgBitrate * 8.0 / 1000) ;
-
-	}
-
-      endPos = ftell(newFile);
-      fseek(newFile, 0L, SEEK_END);
-      size = ftell(newFile) / 1000000.0;
-
-      duration  = ((endPos-startPos) / avgBitrate * 8.0 / 1000) ;
-
-      min = (int) duration / 60;
-      sec = duration-min*60;
-
-      displayInfo (argv[2], head, size, min, sec);  
-
-      fclose(newFile);
-      fclose(mp3File);
     }
+
+  endPos = ftell(newFile);
+  fseek(newFile, 0L, SEEK_END);
+  size = ftell(newFile) / 1000000.0;
+
+  duration  = ((endPos-startPos) / avgBitrate * 8.0 / 1000) ;
+
+  min = (int) duration / 60;
+  sec = duration-min*60;
+
+  displayInfo (outputFile, head, size, min, sec);  
+
+  fclose(newFile);
+  fclose(mp3File);
 
   return 0;
 }
