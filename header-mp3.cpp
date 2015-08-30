@@ -186,6 +186,55 @@ void error_exit (const char msg[])
   exit (1);
 }
 
+long seekTo(FILE *ptr, long duration, int whence)
+{
+  int next = 0;
+  int prev = 0;
+  int cur = 0;
+  long curDur = 0;
+  unsigned char temp[4];
+  long frameSize = 0;
+  int  spf = 0;
+  int  tagSize = 0;
+  int  len = 0;
+  int  frameCount = 0;
+  float avgBitrate = 0;
+  HeaderStruct head;
+
+  if (whence == SEEK_SET)
+    {
+        rewind(ptr); 
+	next = fgetc (ptr);
+	while (next != EOF && (prev != 0xFF || ((cur&0xE0) != 0xE0)))
+	  {
+	    tagSize++;
+	    prev = cur;  cur = next;
+	    next = fgetc (ptr);
+	  }
+	tagSize -= 2;
+	fseek (ptr, tagSize, SEEK_SET);
+    }
+  
+  while (curDur < duration)
+    {
+      fread  (&temp, 4, sizeof(char), ptr);   
+      head = parseHeader(temp);
+	  
+      spf = SamplesPerFrame[head.layer-1][head.mpegVersion-1];
+      frameSize = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
+	+ head.padding;
+      frameSize += (head.crcProtection > 0) ? 0 : 2;
+      fseek (ptr, frameSize-4, SEEK_CUR);     
+      len += frameSize;
+      avgBitrate = (avgBitrate*(frameCount)+head.bitRate)/(frameCount+1);
+      curDur = (len / avgBitrate); 
+      frameCount++;
+    }
+  return len;  
+}
+
+
+
 int main (int argc, char *argv[])
 {
   unsigned char temp[2] = {0,0};
@@ -196,23 +245,26 @@ int main (int argc, char *argv[])
   float avgBitrate = 0;
   char *arg;
   char  tag       [4096*2];
-  char  sourceFile[20];
-  char  outputFile[20];
+  char  sourceFile[20] = "";
+  char  outputFile[20] = "";
   int   spf;
-  int   size;
+  int   fileSize;
   int   startPos;
   int   endPos;
-  int   count   = 0;
-  int   c       = 0;
-  int   p       = 0;
-  int   n       = 0; 
+  int   tagSize = 0;
+  int   cur     = 0;
+  int   prev    = 0;
+  int   next    = 0; 
   long  dur     = 0;
   long  curDur  = 0; 
   long  min     = 0;
   long  sec     = 0;
   long  outMin  = 0;
   long  outSec  = 0;
+  long  startMin = 0;
+  long  startSec = 0;
   long  frameCount = 0;
+  long  frameSize = 0;
 
   if (argc <= 1)
     {
@@ -247,7 +299,7 @@ int main (int argc, char *argv[])
 	      error_exit ("Ouput file name is not provided");
 	    }
 	}      
-      else if (strcmp(arg, "-t") == 0)
+      else if (strcmp(arg, "-et") == 0)
 	{
 	  if (i<argc)
 	    {	    
@@ -269,30 +321,63 @@ int main (int argc, char *argv[])
 	    }
 	  else
 	    {
-	      error_exit ("Time of end is not provided not provided");
+	      error_exit ("End time is not provided not provided");
+	    }
+	}
+      else if (strcmp(arg, "-st") == 0)
+	{
+	  if (i<argc)
+	    {	    
+	      char *delimiterPos = strstr(argv[i],":");
+	      char minStr[10];
+
+	      startSec = atoi (delimiterPos+1);
+	      while (startSec>=60)
+		{
+		  startMin++;
+		  startSec -= 60;
+		}
+
+	      strncpy (minStr, argv[i], delimiterPos-argv[i]);
+	      minStr[strlen(minStr)] = '\0';
+	      startMin += atol(minStr);
+	      i++;
+	      
+	    }
+	  else
+	    {
+	      error_exit ("Start time is not provided not provided");
 	    }
 	}
     }
+
+  if (!strcmp(sourceFile, "") || !strcmp(outputFile, ""))
+    {
+      error_exit("Invalid arguments"); 
+    }  
   
-  printf("SOURCE\t:\t%s \nOUTPUT\t:\t%s \nTIME\t:\t%ld min %ld sec\n\n", sourceFile, outputFile, outMin, outSec);
+  printf("SOURCE\t\t:\t%s \nOUTPUT\t\t:\t%s \nSTART-TIME\t:\t%ld min %ld sec \nEND-TIME\t:\t%ld min %ld sec\n\n\n", sourceFile, outputFile, outMin, outSec, startMin, startSec);
   
   if(!(mp3File = fopen (sourceFile, "rb")))
     {
       error_exit("Can not open file!!");
     }
 
-  n = fgetc (mp3File);
-  while (n != EOF && (p != 0xFF || ((c&0xE0) != 0xE0)))
+  next = fgetc (mp3File);
+  while (next != EOF && (prev != 0xFF || ((cur&0xE0) != 0xE0)))
     {
-      count++;
-      p = c;  c = n;
-      n = fgetc (mp3File);
-    } 
+      tagSize++;
+      prev = cur;  cur = next;
+      next = fgetc (mp3File);
+    }
+  tagSize -= 2;
 
-  cout << "ID Tag Size  : " << count-2 << " Bytes" << endl;
+  cout << "ID Tag Size  : " << tagSize << " Bytes" << endl;
       
-  startPos = count;
-  fseek(mp3File, -3L, SEEK_CUR);
+  startPos = tagSize;
+  fseek(mp3File, tagSize, SEEK_SET);
+
+  
   while (fread (&temp, 4, sizeof(char), mp3File))
     {
       if(temp[0] == 0xFF && (temp[1] & 0xE0) == 0xE0)
@@ -302,34 +387,32 @@ int main (int argc, char *argv[])
 	  frameCount++; 
 
 	  spf = SamplesPerFrame[head.layer-1][head.mpegVersion-1];
-	  size = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
+	  frameSize = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
 	    + head.padding;
-	  size += (head.crcProtection > 0) ? 0 : 2; 
-	  size -= 4;
+	  frameSize += (head.crcProtection > 0) ? 0 : 2; 
+	  frameSize -= 4;
 	}
       else
 	{
-	  // cout << "End of song data\n";0
 	  break;
 	}
-      fseek(mp3File, size, SEEK_CUR);
+      fseek(mp3File, frameSize, SEEK_CUR);
     }
       
   endPos = ftell(mp3File);
   fseek(mp3File, 0L, SEEK_END);
-  size = ftell(mp3File) /1000000.0 ;
+  fileSize = ftell(mp3File) /1000000.0 ;
 
   duration  = ((endPos-startPos) / avgBitrate * 8.0 / 1000) ;
 
   min = (int) duration / 60;
-  sec = (duration-min)*60;
+  sec = (duration-min*60);
 
-  displayInfo (sourceFile, head, size, min, sec);  
+  displayInfo (sourceFile, head, fileSize, min, sec);  
   fclose(mp3File);
 
   avgBitrate = 0;
   frameCount = 0;
-
 
   mp3File = fopen (sourceFile, "rb");
   if(!(newFile = fopen (outputFile, "wb")))
@@ -337,44 +420,55 @@ int main (int argc, char *argv[])
       error_exit("Invalid file name");
     } 
 
-
-  fread (&tag, count-2, sizeof(char), mp3File);
-  fwrite(&tag, count-2, sizeof(char), newFile);
+  fread (&tag, tagSize, sizeof(char), mp3File);
+  fwrite(&tag, tagSize, sizeof(char), newFile);
   startPos = ftell(newFile);
-				      
-  dur = (outSec + outMin*60);
-  while (curDur < dur)
+
+  
+  if (outMin == 0 && outSec == 0)
     {
-      fread (&temp, 4, sizeof(char), mp3File);
-
-      head = parseHeader(temp);
-      
-      avgBitrate = (avgBitrate*frameCount+head.bitRate)/(frameCount+1);
-      frameCount++;
-	  
-      spf = SamplesPerFrame[head.layer-1][head.mpegVersion-1];
-      size = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
-	+ head.padding;
-      size += (head.crcProtection > 0) ? 0 : 2;
-
-      fseek (mp3File, -4L, SEEK_CUR);
-      fread  (&tag, size, sizeof(char), mp3File);
-      fwrite (&tag, size, sizeof(char), newFile);
-
-      curDur = ((ftell(mp3File)-startPos) / avgBitrate * 8.0 / 1000) ;
-
+      outMin = min;
+      outSec = sec;
     }
 
-  endPos = ftell(newFile);
-  fseek(newFile, 0L, SEEK_END);
-  size = ftell(newFile) / 1000000.0;
+  dur      = (outSec + outMin*60) / 8.0 * 1000;
+  
+  curDur   = 0;
+  long len = 0;
 
-  duration  = ((endPos-startPos) / avgBitrate * 8.0 / 1000) ;
+  long startTimeLen = (startMin * 60 + startSec) / 8.0 * 1000;
+  len =  seekTo (mp3File, startTimeLen, SEEK_SET);
+
+  while (curDur < dur)
+    {
+      fread  (&temp, 4, sizeof(char), mp3File);
+      fwrite (&temp, 4, sizeof(char), newFile);
+
+      head = parseHeader(temp);
+	  
+      spf = SamplesPerFrame[head.layer-1][head.mpegVersion-1];
+      frameSize = ((spf / 8 * head.bitRate * 1000) / head.samplingRate)
+	+ head.padding;
+      frameSize += (head.crcProtection > 0) ? 0 : 2;
+
+      fread  (&tag, frameSize-4, sizeof(char), mp3File);
+      fwrite (&tag, frameSize-4, sizeof(char), newFile);
+
+      len += frameSize;
+      avgBitrate = (avgBitrate*(frameCount)+head.bitRate)/(frameCount+1);
+      curDur = (len / avgBitrate); 
+      frameCount++;
+    }
+
+  fseek(newFile, 0L, SEEK_END);
+  fileSize = ftell(newFile) / 1000000.0;
+
+  duration  = (outMin - startMin)*60 + (outSec - startSec);
 
   min = (int) duration / 60;
   sec = duration-min*60;
 
-  displayInfo (outputFile, head, size, min, sec);  
+  displayInfo (outputFile, head, fileSize, min, sec);  
 
   fclose(newFile);
   fclose(mp3File);
